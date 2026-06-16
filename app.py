@@ -138,10 +138,13 @@ def generate_script(topic, speakers):
         'Return ONLY a JSON array of {"speaker": "<name>", "line": "<text>", '
         '"emotion": "<delivery>"}.'
     )
+    turns = max(18, len(speakers) * 7)
     user = (
         f"Topic: {topic}\nSpeakers: {roster}\n"
-        f"Write a {max(8, len(speakers) * 3)}-turn back-and-forth where they actually "
-        "talk to each other about this — interrupt, react, disagree — in their own voices."
+        f"Write a long, {turns}-turn back-and-forth where they actually talk to each "
+        "other about this — interrupt, react, disagree, change their minds, and dig into "
+        "specifics — in their own voices. Keep going: open it up, explore several angles, "
+        "and let it build to a real conclusion. Don't wrap up early."
     )
     payload = {
         "model": MODEL,
@@ -159,7 +162,7 @@ def generate_script(topic, speakers):
                 "required": ["speaker", "line", "emotion"]}}},
             "required": ["turns"],
         },
-        "options": {"temperature": 0.9},
+        "options": {"temperature": 0.9, "num_predict": 4096, "num_ctx": 8192},
     }
     req = urllib.request.Request(
         OLLAMA, data=json.dumps(payload).encode(),
