@@ -47,6 +47,13 @@
   .turn .who { color:var(--accent); font-weight:600; font-size:13px; display:block; }
   .status { color:var(--dim); font-size:14px; margin:18px 0; min-height:20px; }
   .err { color:#ff7b7b; }
+  .pausebar { display:flex; align-items:center; gap:12px; margin:0 0 18px; font-size:13px; color:var(--dim); }
+  .pausebar input[type=range] { flex:1; accent-color:var(--accent); }
+  .pausebar input[type=number] {
+    width:72px; padding:6px 8px; background:var(--card); border:1px solid #262932;
+    border-radius:8px; color:var(--fg); font:inherit; text-align:right;
+  }
+  .pausebar label { white-space:nowrap; }
   .hidden { display:none; }
 </style>
 </head>
@@ -77,6 +84,13 @@
     <button class="ghost" id="export" disabled>Export</button>
   </div>
 
+  <div id="pausebar" class="pausebar hidden">
+    <label for="gap">Pause between speakers</label>
+    <input type="range" id="gap" min="0" max="1500" step="10" value="300">
+    <input type="number" id="gapnum" min="0" max="3000" step="10" value="300">
+    <span>ms</span>
+  </div>
+
   <div id="transcript"></div>
   <audio id="audio"></audio>
 </main>
@@ -85,6 +99,13 @@
 const $ = id => document.getElementById(id);
 const audio = $('audio');
 let sid = null, ready = new Set(), cur = -1, n = 0, finished = false;
+
+// Inter-speaker pause (ms), applied live at playback — tune without re-voicing.
+let gapMs = 300;
+const gapRange = $('gap'), gapNum = $('gapnum');
+function setGap(v){ gapMs = Math.max(0, Math.min(3000, +v || 0)); gapRange.value = Math.min(gapMs, 1500); gapNum.value = gapMs; }
+gapRange.addEventListener('input', () => setGap(gapRange.value));
+gapNum.addEventListener('input', () => setGap(gapNum.value));
 
 function setStatus(msg, err=false){ $('status').className = 'status' + (err?' err':''); $('status').textContent = msg; }
 
@@ -109,6 +130,7 @@ $('form').addEventListener('submit', e => {
     $('transcript').innerHTML = lines.map((l,i) =>
       `<div class="turn" id="t${i}"><span class="who">${l.speaker}</span>${l.line}</div>`).join('');
     $('controls').classList.remove('hidden');
+    $('pausebar').classList.remove('hidden');
     setStatus('Voicing the conversation…');
   });
 
@@ -131,7 +153,7 @@ function play(i){
   cur = i; highlight(i); $('playpause').textContent = 'Pause';
   audio.src = `/audio/${sid}/${i}.wav`; audio.play();
 }
-audio.addEventListener('ended', () => { if (cur >= 0) play(cur + 1); });  // pause is baked into each clip
+audio.addEventListener('ended', () => { if (cur >= 0) setTimeout(() => play(cur + 1), gapMs); });
 
 function highlight(i){
   document.querySelectorAll('.turn').forEach((t,k) => {
@@ -147,13 +169,13 @@ $('playpause').onclick = () => {
 };
 $('stop').onclick = () => { audio.pause(); audio.currentTime = 0; cur = -1; highlight(-1); $('playpause').textContent = 'Pause'; };
 $('restart').onclick = () => { play(0); };
-$('export').onclick = () => { if (sid) location.href = `/export/${sid}`; };
+$('export').onclick = () => { if (sid) location.href = `/export/${sid}?gap=${gapMs}`; };
 
 function reset(){
   sid = null; ready = new Set(); cur = -1; n = 0; finished = false;
   audio.pause(); audio.removeAttribute('src');
   $('transcript').innerHTML = ''; $('chips').innerHTML = '';
-  $('controls').classList.add('hidden'); $('export').disabled = true;
+  $('controls').classList.add('hidden'); $('pausebar').classList.add('hidden'); $('export').disabled = true;
   $('playpause').textContent = 'Pause';
 }
 </script>

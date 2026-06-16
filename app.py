@@ -1,5 +1,14 @@
 """Minimal local AI podcast generator: Ollama writes the script, Kokoro voices it,
 the browser plays it. One file, no DB. See plan for design notes."""
+import os
+import warnings
+
+# Quiet the third-party boot chatter (torch/diffusers/perth deprecations, HF telemetry)
+# so startup prints just "Loading… / Ready". Doesn't affect our own logging.
+warnings.filterwarnings("ignore")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+
 import json
 import random
 import shutil
@@ -7,11 +16,14 @@ import subprocess
 import time
 import urllib.request
 import uuid
+import logging
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 from flask import Flask, Response, request, send_file, send_from_directory
+
+logging.getLogger().setLevel(logging.ERROR)  # mute root-logger model chatter; werkzeug keeps its own
 
 app = Flask(__name__)
 TMP = Path("/tmp/ai-podcast")
@@ -43,17 +55,6 @@ EMOTION_TTS = {
     "thoughtful": {"exaggeration": 0.4, "cfg_weight": 0.3},
     "dismissive": {"exaggeration": 0.6, "cfg_weight": 0.5},
 }
-
-
-def gap_for(line):
-    """(B) Trailing pause (seconds) based on how the line ends — interruptions
-    barely breathe, questions/trail-offs leave a beat."""
-    end = line.rstrip()[-1:] if line.rstrip() else ""
-    if end in "—–":
-        return 0.05
-    if end in "?…" or line.rstrip().endswith("..."):
-        return 0.6
-    return 0.3
 
 
 _kpipe = None  # Kokoro, only used to seed reference clips once
@@ -225,9 +226,10 @@ def generate():
                     exaggeration=p["exaggeration"], cfg_weight=p["cfg_weight"])
                 # bake the turn's trailing pause into the clip so playback and
                 # export both breathe without any extra silence files
+                # tight clip — the gap between turns is applied at playback/export
+                # so it can be tuned live from the UI without re-voicing
                 audio = np.asarray(wav.squeeze(0).cpu(), dtype="float32")
-                pause = np.zeros(int(gap_for(turn["line"]) * sr), "float32")
-                sf.write(outdir / f"{i}.wav", np.concatenate([audio, pause]), sr)
+                sf.write(outdir / f"{i}.wav", audio, sr)
                 yield sse("line", {"index": i})
             except Exception as e:
                 yield sse("error", {"message": f"TTS failed on line {i}: {e}"})
@@ -250,13 +252,19 @@ MIC_CHAIN = "highpass=f=85,acompressor=ratio=3:attack=5:release=120,aecho=0.8:0.
 
 @app.route("/export/<sid>")
 def export(sid):
+    gap_ms = max(0, min(3000, request.args.get("gap", default=300, type=int)))
     outdir = TMP / sid
     clips = sorted((p for p in outdir.glob("*.wav") if p.stem.isdigit()),
                    key=lambda p: int(p.stem))
     if not clips:
         return "nothing to export", 404
-    # pauses are already baked into each clip, so a plain concat is enough
-    (outdir / "list.txt").write_text("".join(f"file '{c.name}'\n" for c in clips))
+    # insert the chosen inter-speaker gap (ms) between clips, matching playback
+    items = [f"file '{c.name}'\n" for c in clips]
+    if gap_ms:
+        sr = sf.info(str(clips[0])).samplerate
+        sf.write(outdir / "_pause.wav", np.zeros(int(gap_ms / 1000 * sr), "float32"), sr)
+        items = [x for c in clips for x in (f"file '{c.name}'\n", "file '_pause.wav'\n")]
+    (outdir / "list.txt").write_text("".join(items))
     mp3 = outdir / "podcast.mp3"
     subprocess.run(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "list.txt",
@@ -267,4 +275,11 @@ def export(sid):
 
 if __name__ == "__main__":
     cleanup_old()
+    # Warm up at boot so the model download/load happens once here, not inside the
+    # first request (which would stall voicing right after the script is written).
+    print("Loading TTS model and seeding voice references…")
+    chatterbox()
+    for v in VOICES:
+        ensure_ref(v)
+    print("Ready → http://localhost:5000")
     app.run(port=5000, threaded=True)
