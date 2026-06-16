@@ -1,8 +1,10 @@
 # AI Podcast
 
-Local-first AI podcast generator. Enter a topic, pick 1–4 speakers, and it writes
-a natural discussion with a local LLM, voices each speaker with distinct TTS, and
-plays it back as audio with a live transcript.
+![AI Podcast screenshot](screenshot.png)
+
+Local-first AI podcast generator. Enter a topic and it writes a natural two-person
+discussion with a local LLM, voices each speaker with distinct TTS, and plays it
+back as audio with lip-synced 3D faces and a live transcript.
 
 Everything runs locally — no cloud, no API keys.
 
