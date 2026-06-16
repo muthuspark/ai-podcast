@@ -31,28 +31,16 @@
   }
   button:disabled { opacity:.4; cursor:default; }
   .ghost { background:transparent; color:var(--fg); border:1px solid #2b2f3a; }
-  .chips { display:flex; flex-wrap:wrap; gap:8px; margin:26px 0 6px; }
-  .chip {
-    background:var(--card); border:1px solid #262932; border-radius:999px;
-    padding:6px 13px; font-size:13px;
-  }
-  .chip b { color:var(--accent); font-weight:600; }
-  .chip span { color:var(--dim); }
-  /* animated speaker faces — mouth scaleY is driven live by audio volume */
-  .stage { display:flex; flex-wrap:wrap; justify-content:center; gap:22px; margin:26px 0 6px; }
-  .avatar { display:flex; flex-direction:column; align-items:center; gap:7px; width:104px; text-align:center; opacity:.4; transition:opacity .25s; }
-  .avatar.active { opacity:1; }
-  .face { position:relative; width:74px; height:74px; border-radius:50%;
-    background:hsl(var(--hue) 58% 58%); box-shadow:inset 0 -8px 18px rgba(0,0,0,.18); transition:box-shadow .2s; }
-  .avatar.active .face { box-shadow:inset 0 -8px 18px rgba(0,0,0,.18), 0 0 0 2px var(--accent), 0 0 22px -4px var(--accent); }
-  .eye { position:absolute; top:29px; width:8px; height:8px; border-radius:50%; background:#11131a; transform-origin:center; }
-  .eye.l { left:21px; } .eye.r { right:21px; }
-  .avatar.active .eye { animation:blink 4.2s infinite; }
-  @keyframes blink { 0%,93%,100%{ transform:scaleY(1);} 96%{ transform:scaleY(.1);} }
-  .mouth { position:absolute; left:27px; bottom:15px; width:20px; height:6px; border-radius:11px;
-    background:#11131a; transform:scaleY(1); transform-origin:center; transition:transform .05s linear; }
-  .aname { font-weight:600; font-size:13px; }
-  .apersona { color:var(--dim); font-size:11px; line-height:1.3; }
+  /* 3D speaker stage */
+  .stage { margin:24px 0 6px; }
+  #heads { display:block; width:100%; height:230px; border-radius:14px;
+    background:radial-gradient(120% 90% at 50% 18%, #1b1e27 0%, #101218 70%); }
+  .labels { display:flex; margin-top:8px; }
+  .labels .lab { flex:1; text-align:center; transition:opacity .25s; opacity:.45; }
+  .labels .lab.active { opacity:1; }
+  .labels .lab b { display:block; font-size:13px; font-weight:600; }
+  .labels .lab.active b { color:var(--accent); }
+  .labels .lab span { color:var(--dim); font-size:11px; line-height:1.25; }
   .controls { display:flex; gap:8px; margin:22px 0 18px; }
   .controls button { flex:1; padding:11px; }
   #transcript { display:flex; flex-direction:column; gap:4px; }
@@ -71,6 +59,12 @@
   .pausebar label { white-space:nowrap; }
   .hidden { display:none; }
 </style>
+<script type="importmap">
+{ "imports": {
+    "three": "/static/three.module.js",
+    "three/addons/": "/static/jsm/"
+} }
+</script>
 </head>
 <body>
 <main>
@@ -89,7 +83,10 @@
     </div>
   </form>
 
-  <div id="chips" class="stage hidden"></div>
+  <div id="stage" class="stage hidden">
+    <canvas id="heads"></canvas>
+    <div id="labels" class="labels"></div>
+  </div>
   <div id="status" class="status"></div>
 
   <div id="controls" class="controls hidden">
@@ -110,40 +107,18 @@
   <audio id="audio"></audio>
 </main>
 
-<script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { clone as skClone } from 'three/addons/utils/SkeletonUtils.js';
+
 const $ = id => document.getElementById(id);
 const audio = $('audio');
 let sid = null, ready = new Set(), cur = -1, n = 0, finished = false, lines = [];
 
-// --- live lip-sync: read the playing audio's volume, open the active mouth ---
-let actx, analyser, dataArr, animating = false;
-function audioGraph(){            // must run from a user gesture (Start click)
-  if (actx){ actx.resume(); return; }
-  actx = new (window.AudioContext || window.webkitAudioContext)();
-  const src = actx.createMediaElementSource(audio);  // once per element
-  analyser = actx.createAnalyser(); analyser.fftSize = 256;
-  src.connect(analyser); analyser.connect(actx.destination);
-  dataArr = new Uint8Array(analyser.fftSize);
-  animating = true; requestAnimationFrame(tick);
-}
-function tick(){
-  requestAnimationFrame(tick);
-  const m = document.querySelector('.avatar.active .mouth');
-  if (!m) return;
-  let open = 0;
-  if (analyser && !audio.paused){
-    analyser.getByteTimeDomainData(dataArr);
-    let sum = 0; for (let j = 0; j < dataArr.length; j++){ const x = (dataArr[j]-128)/128; sum += x*x; }
-    open = Math.min(1, Math.sqrt(sum/dataArr.length) * 4);
-  }
-  m.style.transform = `scaleY(${1 + open * 5})`;
-}
-function faceActive(name){
-  document.querySelectorAll('.avatar').forEach(a => a.classList.toggle('active', a.dataset.name === name));
-}
-
-// Inter-speaker pause (ms), applied live at playback — tune without re-voicing.
-// Default 135ms ≈ natural conversational floor-transfer offset (Stivers et al. 2009).
+// --- inter-speaker pause (ms), live at playback (Stivers et al. 2009 ≈ 135ms) ---
 let gapMs = 135;
 const gapRange = $('gap'), gapNum = $('gapnum');
 function setGap(v){ gapMs = Math.max(0, Math.min(3000, +v || 0)); gapRange.value = Math.min(gapMs, 1500); gapNum.value = gapMs; }
@@ -152,24 +127,141 @@ gapNum.addEventListener('input', () => setGap(gapNum.value));
 
 function setStatus(msg, err=false){ $('status').className = 'status' + (err?' err':''); $('status').textContent = msg; }
 
+// ---------------- Web Audio: live volume of the playing clip ----------------
+let actx, analyser, dataArr;
+function audioGraph(){            // must run from a user gesture (Start click)
+  if (actx){ actx.resume(); return; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = actx.createMediaElementSource(audio);   // once per element
+  analyser = actx.createAnalyser(); analyser.fftSize = 256;
+  src.connect(analyser); analyser.connect(actx.destination);
+  dataArr = new Uint8Array(analyser.fftSize);
+}
+function volume(){
+  if (!analyser || audio.paused) return 0;
+  analyser.getByteTimeDomainData(dataArr);
+  let s = 0; for (let i = 0; i < dataArr.length; i++){ const x = (dataArr[i]-128)/128; s += x*x; }
+  return Math.min(1, Math.sqrt(s/dataArr.length) * 4);
+}
+
+// ---------------- Three.js stage: one realistic head per speaker ----------------
+const HEAD_H = 1.4, SPACING = 1.3;   // head height in scene units, x-gap between heads
+let renderer, scene, camera, headTemplate = null, headsByName = {}, activeName = null;
+
+const lerp = (a, b, t) => a + (b - a) * t;
+const setMorph = (m, d, name, v) => { if (d[name] != null) m[d[name]] = v; };
+
+const templateReady = (async () => {
+  renderer = new THREE.WebGLRenderer({ canvas: $('heads'), antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(30, 2, 0.1, 100);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.15));
+  const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(0.4, 0.9, 2); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xcdddff, 0.5); fill.position.set(-1.2, 0.2, 1); scene.add(fill);
+
+  const ktx2 = new KTX2Loader().setTranscoderPath('/static/jsm/libs/basis/').detectSupport(renderer);
+  const loader = new GLTFLoader().setKTX2Loader(ktx2).setMeshoptDecoder(MeshoptDecoder);
+  const gltf = await loader.loadAsync('/static/facecap.glb');
+  headTemplate = gltf.scene;
+  requestAnimationFrame(renderStage);
+})().catch(e => { console.error('3D head failed to load:', e); });
+
+function morphMeshOf(root){
+  let mesh = null;
+  root.traverse(o => { if (o.morphTargetDictionary && 'jawOpen' in o.morphTargetDictionary) mesh = o; });
+  return mesh;
+}
+
+async function buildHeads(speakers){
+  await templateReady;
+  if (!headTemplate) return;
+  Object.values(headsByName).forEach(h => scene.remove(h.group));
+  headsByName = {};
+  const N = speakers.length;
+  speakers.forEach((s, i) => {
+    const root = skClone(headTemplate);
+    const mesh = morphMeshOf(root);
+    mesh.morphTargetInfluences = mesh.morphTargetInfluences.slice();   // independent per head
+    mesh.material = mesh.material.clone();
+    mesh.material.color = new THREE.Color().setHSL(((i * 67) % 360) / 360, 0.22, 0.86);  // gentle per-speaker tint
+    // recenter + scale to a uniform height
+    const box = new THREE.Box3().setFromObject(root), size = new THREE.Vector3(), center = new THREE.Vector3();
+    box.getSize(size); box.getCenter(center);
+    root.position.sub(center);
+    root.scale.setScalar(HEAD_H / size.y);
+    const group = new THREE.Group();
+    group.add(root);
+    group.position.x = (i - (N - 1) / 2) * SPACING;
+    scene.add(group);
+    headsByName[s.name] = { group, mesh, dict: mesh.morphTargetDictionary, blink: Math.random() * 4 };
+  });
+  frameCamera(N);
+  resize();
+}
+
+function frameCamera(N){
+  const span = (N - 1) * SPACING + 1.0;                 // total width to fit
+  const aspect = camera.aspect || 2;
+  const vHalf = Math.tan((camera.fov * Math.PI / 180) / 2);
+  const zForWidth = (span / 2) / (vHalf * aspect);
+  const zForHeight = (HEAD_H * 0.62) / vHalf;            // frame the face, not full head
+  const z = Math.max(zForWidth, zForHeight) + 0.35;
+  camera.position.set(0, 0.05, z);
+  camera.lookAt(0, 0.05, 0);
+}
+
+function faceActive(name){
+  activeName = name;
+  document.querySelectorAll('.lab').forEach(l => l.classList.toggle('active', l.dataset.name === name));
+}
+
+function renderStage(t){
+  requestAnimationFrame(renderStage);
+  if (!scene) return;
+  const now = t * 0.001, vol = volume();
+  for (const [name, h] of Object.entries(headsByName)){
+    const m = h.mesh.morphTargetInfluences, d = h.dict, active = name === activeName;
+    // blink on an independent timer
+    h.blink -= 0.016; let bl = 0;
+    if (h.blink < 0){ bl = 1; if (h.blink < -0.1) h.blink = 2.5 + Math.random() * 3; }
+    setMorph(m, d, 'eyeBlink_L', bl); setMorph(m, d, 'eyeBlink_R', bl);
+    // mouth: jaw opens with the active speaker's volume, smoothed
+    setMorph(m, d, 'jawOpen', lerp(m[d['jawOpen']] || 0, active ? vol * 0.9 : 0, 0.5));
+    setMorph(m, d, 'mouthSmile_L', 0.12); setMorph(m, d, 'mouthSmile_R', 0.12);
+    // idle heads tilt down a touch as if listening; active faces forward + leans in
+    h.group.rotation.y = Math.sin(now * 0.6 + h.group.position.x) * 0.05;
+    h.group.rotation.x = lerp(h.group.rotation.x, active ? -0.02 : 0.1, 0.08);
+    h.group.scale.setScalar(lerp(h.group.scale.x, active ? 1.08 : 0.92, 0.1));
+  }
+  renderer.render(scene, camera);
+}
+
+function resize(){
+  if (!renderer) return;
+  const w = $('heads').clientWidth, hgt = $('heads').clientHeight;
+  renderer.setSize(w, hgt, false);
+  camera.aspect = w / hgt; camera.updateProjectionMatrix();
+}
+addEventListener('resize', () => { resize(); frameCamera(Object.keys(headsByName).length || 1); });
+
+// ---------------- generation / playback ----------------
 $('form').addEventListener('submit', e => {
   e.preventDefault();
   const topic = $('topic').value.trim();
   if (!topic) return;
   reset();
-  audioGraph();                 // create/resume the audio context within the click gesture
+  audioGraph();
   $('start').disabled = true;
   setStatus('Writing the script…');
   const es = new EventSource(`/generate?topic=${encodeURIComponent(topic)}&speakers=${$('speakers').value}`);
 
   es.addEventListener('speakers', e => {
     const d = JSON.parse(e.data); sid = d.sid;
-    $('chips').classList.remove('hidden');
-    $('chips').innerHTML = d.speakers.map((s, k) =>
-      `<div class="avatar" data-name="${s.name}" style="--hue:${k * 67}">
-         <div class="face"><span class="eye l"></span><span class="eye r"></span><span class="mouth"></span></div>
-         <div class="aname">${s.name}</div><div class="apersona">${s.persona}</div>
-       </div>`).join('');
+    $('stage').classList.remove('hidden');
+    $('labels').innerHTML = d.speakers.map(s =>
+      `<div class="lab" data-name="${s.name}"><b>${s.name}</b><span>${s.persona}</span></div>`).join('');
+    buildHeads(d.speakers);
   });
 
   es.addEventListener('script', e => {
@@ -183,8 +275,8 @@ $('form').addEventListener('submit', e => {
 
   es.addEventListener('line', e => {
     ready.add(JSON.parse(e.data).index);
-    if (cur === -1) play(0);        // start as soon as line 0 lands
-    else if (audio.paused && cur < n && ready.has(cur)) play(cur); // resume a stall
+    if (cur === -1) play(0);
+    else if (audio.paused && cur < n && ready.has(cur)) play(cur);
   });
 
   es.addEventListener('done', () => { finished = true; $('export').disabled = false; setStatus('Ready.'); es.close(); $('start').disabled = false; });
@@ -196,7 +288,7 @@ $('form').addEventListener('submit', e => {
 
 function play(i){
   if (i >= n){ highlight(-1); faceActive(null); setStatus(finished ? 'Done.' : 'Ready.'); return; }
-  if (!ready.has(i)){ cur = i; setStatus('Buffering next line…'); return; } // wait for 'line'
+  if (!ready.has(i)){ cur = i; setStatus('Buffering next line…'); return; }
   cur = i; highlight(i); faceActive(lines[i] && lines[i].speaker); $('playpause').textContent = 'Pause';
   audio.src = `/audio/${sid}/${i}.wav`; audio.play();
 }
@@ -221,7 +313,7 @@ $('export').onclick = () => { if (sid) location.href = `/export/${sid}?gap=${gap
 function reset(){
   sid = null; ready = new Set(); cur = -1; n = 0; finished = false; lines = [];
   audio.pause(); audio.removeAttribute('src');
-  $('transcript').innerHTML = ''; $('chips').innerHTML = '';
+  $('transcript').innerHTML = ''; $('labels').innerHTML = ''; faceActive(null);
   $('controls').classList.add('hidden'); $('pausebar').classList.add('hidden'); $('export').disabled = true;
   $('playpause').textContent = 'Pause';
 }
