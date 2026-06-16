@@ -38,6 +38,21 @@
   }
   .chip b { color:var(--accent); font-weight:600; }
   .chip span { color:var(--dim); }
+  /* animated speaker faces — mouth scaleY is driven live by audio volume */
+  .stage { display:flex; flex-wrap:wrap; justify-content:center; gap:22px; margin:26px 0 6px; }
+  .avatar { display:flex; flex-direction:column; align-items:center; gap:7px; width:104px; text-align:center; opacity:.4; transition:opacity .25s; }
+  .avatar.active { opacity:1; }
+  .face { position:relative; width:74px; height:74px; border-radius:50%;
+    background:hsl(var(--hue) 58% 58%); box-shadow:inset 0 -8px 18px rgba(0,0,0,.18); transition:box-shadow .2s; }
+  .avatar.active .face { box-shadow:inset 0 -8px 18px rgba(0,0,0,.18), 0 0 0 2px var(--accent), 0 0 22px -4px var(--accent); }
+  .eye { position:absolute; top:29px; width:8px; height:8px; border-radius:50%; background:#11131a; transform-origin:center; }
+  .eye.l { left:21px; } .eye.r { right:21px; }
+  .avatar.active .eye { animation:blink 4.2s infinite; }
+  @keyframes blink { 0%,93%,100%{ transform:scaleY(1);} 96%{ transform:scaleY(.1);} }
+  .mouth { position:absolute; left:27px; bottom:15px; width:20px; height:6px; border-radius:11px;
+    background:#11131a; transform:scaleY(1); transform-origin:center; transition:transform .05s linear; }
+  .aname { font-weight:600; font-size:13px; }
+  .apersona { color:var(--dim); font-size:11px; line-height:1.3; }
   .controls { display:flex; gap:8px; margin:22px 0 18px; }
   .controls button { flex:1; padding:11px; }
   #transcript { display:flex; flex-direction:column; gap:4px; }
@@ -74,7 +89,7 @@
     </div>
   </form>
 
-  <div id="chips" class="chips hidden"></div>
+  <div id="chips" class="stage hidden"></div>
   <div id="status" class="status"></div>
 
   <div id="controls" class="controls hidden">
@@ -98,7 +113,34 @@
 <script>
 const $ = id => document.getElementById(id);
 const audio = $('audio');
-let sid = null, ready = new Set(), cur = -1, n = 0, finished = false;
+let sid = null, ready = new Set(), cur = -1, n = 0, finished = false, lines = [];
+
+// --- live lip-sync: read the playing audio's volume, open the active mouth ---
+let actx, analyser, dataArr, animating = false;
+function audioGraph(){            // must run from a user gesture (Start click)
+  if (actx){ actx.resume(); return; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = actx.createMediaElementSource(audio);  // once per element
+  analyser = actx.createAnalyser(); analyser.fftSize = 256;
+  src.connect(analyser); analyser.connect(actx.destination);
+  dataArr = new Uint8Array(analyser.fftSize);
+  animating = true; requestAnimationFrame(tick);
+}
+function tick(){
+  requestAnimationFrame(tick);
+  const m = document.querySelector('.avatar.active .mouth');
+  if (!m) return;
+  let open = 0;
+  if (analyser && !audio.paused){
+    analyser.getByteTimeDomainData(dataArr);
+    let sum = 0; for (let j = 0; j < dataArr.length; j++){ const x = (dataArr[j]-128)/128; sum += x*x; }
+    open = Math.min(1, Math.sqrt(sum/dataArr.length) * 4);
+  }
+  m.style.transform = `scaleY(${1 + open * 5})`;
+}
+function faceActive(name){
+  document.querySelectorAll('.avatar').forEach(a => a.classList.toggle('active', a.dataset.name === name));
+}
 
 // Inter-speaker pause (ms), applied live at playback — tune without re-voicing.
 // Default 135ms ≈ natural conversational floor-transfer offset (Stivers et al. 2009).
@@ -115,6 +157,7 @@ $('form').addEventListener('submit', e => {
   const topic = $('topic').value.trim();
   if (!topic) return;
   reset();
+  audioGraph();                 // create/resume the audio context within the click gesture
   $('start').disabled = true;
   setStatus('Writing the script…');
   const es = new EventSource(`/generate?topic=${encodeURIComponent(topic)}&speakers=${$('speakers').value}`);

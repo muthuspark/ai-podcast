@@ -11,6 +11,7 @@ os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
 import json
 import random
+import re
 import shutil
 import subprocess
 import time
@@ -109,7 +110,11 @@ def parse_script(text, names):
     for item in data:
         spk = str(item.get("speaker", "")).strip()
         line = str(item.get("line", item.get("text", ""))).strip()
-        if not line:
+        # drop "(pauses)"-style stage directions the model emits anyway; leave an
+        # ellipsis so TTS renders a real pause instead of reading the word aloud
+        line = re.sub(r"\s*\([^)]*\)\s*", " ... ", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line or line == "...":
             continue
         emotion = str(item.get("emotion", "neutral")).strip().lower()
         if emotion not in EMOTION_TTS:
