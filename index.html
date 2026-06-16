@@ -199,16 +199,30 @@ const resolveMorphs = d => {
 // head actually has get applied, so visemes drive Avaturn heads and jaw/funnel/pucker
 // drive ARKit (facecap) heads from the same table.
 const MOUTH_CH = ['jaw', 'aa', 'E', 'oh', 'ou', 'pp', 'ff', 'kk', 'nn', 'funnel', 'pucker', 'close'];
-const SHAPE_TARGETS = {
-  X: {},                                              // idle / silence
-  A: { pp: 1.0, close: 0.9 },                         // M B P — lips together
-  B: { jaw: 0.16, E: 0.25, kk: 0.30 },               // many consonants, slightly open
-  C: { E: 0.70, jaw: 0.42 },                          // EH / AE
-  D: { aa: 1.0, jaw: 0.70 },                          // AA — wide open
-  E: { oh: 0.85, funnel: 0.6, jaw: 0.32 },           // O
-  F: { ou: 0.95, pucker: 0.85, jaw: 0.12 },          // U / W / OW
-  G: { ff: 1.0, jaw: 0.08 },                          // F / V — teeth on lip
-  H: { nn: 0.55, jaw: 0.30 },                         // L
+// Viseme-capable heads (Avaturn): the visemes ALONE shape the mouth — never add jaw,
+// or it stacks and flies open. Gentle magnitudes.
+const SHAPE_VIS = {
+  X: {},                          // silence — rest, lips lightly closed
+  A: { pp: 0.7 },                 // M B P
+  B: { kk: 0.28 },                // light consonants
+  C: { E: 0.5 },                  // EH / AE
+  D: { aa: 0.7 },                 // AA — open (not 1.0)
+  E: { oh: 0.6 },                 // O
+  F: { ou: 0.7 },                 // U / W / OW
+  G: { ff: 0.7 },                 // F / V
+  H: { nn: 0.4 },                 // L
+};
+// ARKit heads (facecap): no visemes, so jaw + lip shapes carry it. Capped low.
+const SHAPE_JAW = {
+  X: {},
+  A: { close: 0.6 },              // M B P
+  B: { jaw: 0.10 },
+  C: { jaw: 0.26 },
+  D: { jaw: 0.45 },               // AA — open but not gaping
+  E: { jaw: 0.18, funnel: 0.45 },
+  F: { jaw: 0.06, pucker: 0.6 },
+  G: { jaw: 0.05 },
+  H: { jaw: 0.20 },
 };
 // per-line delivery → brow/smile/frown targets (applied to the active speaker)
 const EMOTION_FACE = {
@@ -294,7 +308,9 @@ async function buildHeads(speakers){
     group.add(placeHead(root));
     group.position.x = (i - (N - 1) / 2) * SPACING;
     scene.add(group);
-    headsByName[s.name] = { group, m, idx: resolveMorphs(m.morphTargetDictionary), blink: Math.random() * 4 };
+    const idx = resolveMorphs(m.morphTargetDictionary);
+    const hasViseme = idx.aa >= 0 || idx.oh >= 0 || idx.E >= 0;   // Avaturn vs ARKit
+    headsByName[s.name] = { group, m, idx, hasViseme, blink: Math.random() * 4 };
   }));
   frameCamera(N);
   resize();
@@ -320,16 +336,12 @@ function renderStage(t){
   requestAnimationFrame(renderStage);
   if (!scene) return;
   const now = t * 0.001, vol = volume();
-  // current viseme shape of the active clip, by playback time
+  // current mouth shape letter of the active clip, by playback time
   const cues = cuesByIndex[cur];
-  let shape = {};
-  if (activeName && !audio.paused){
-    if (cues && cues.length){
-      const tt = audio.currentTime;
-      shape = SHAPE_TARGETS[(cues.find(c => tt >= c.s && tt < c.e) || cues[cues.length - 1]).v] || {};
-    } else if (vol > 0){
-      shape = { jaw: vol * 0.8 };                       // fallback: amplitude jaw if no cues yet
-    }
+  let cueV = null;
+  if (activeName && !audio.paused && cues && cues.length){
+    const tt = audio.currentTime;
+    cueV = (cues.find(c => tt >= c.s && tt < c.e) || cues[cues.length - 1]).v;
   }
   const emo = EMOTION_FACE[(lines[cur] && lines[cur].emotion) || 'neutral'] || EMOTION_FACE.neutral;
 
@@ -340,8 +352,11 @@ function renderStage(t){
     if (h.blink < 0){ bl = 1; if (h.blink < -0.1) h.blink = 2.5 + Math.random() * 3; }
     if (idx.blinkL >= 0) inf[idx.blinkL] = bl;
     if (idx.blinkR >= 0) inf[idx.blinkR] = bl;
-    // viseme mouth: drive each mouth channel toward the active shape (0 when idle)
-    for (const ch of MOUTH_CH) setIdx(inf, idx[ch], active ? (shape[ch] || 0) : 0, 0.4);
+    // mouth: pick the table matching this head's rig; viseme heads never get jaw added
+    let shape = {};
+    if (active && cueV != null) shape = (h.hasViseme ? SHAPE_VIS : SHAPE_JAW)[cueV] || {};
+    else if (active && vol > 0 && idx.jaw >= 0) shape = { jaw: vol * 0.45 };   // amplitude fallback
+    for (const ch of MOUTH_CH) setIdx(inf, idx[ch], shape[ch] || 0, 0.4);
     // emotion on the active speaker's brow/smile/frown; neutral-resting when idle
     const e = active ? emo : EMOTION_FACE.neutral;
     setIdx(inf, idx.brow, e.brow, 0.08);
