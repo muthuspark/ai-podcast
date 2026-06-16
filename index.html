@@ -165,12 +165,15 @@ $('form').addEventListener('submit', e => {
   es.addEventListener('speakers', e => {
     const d = JSON.parse(e.data); sid = d.sid;
     $('chips').classList.remove('hidden');
-    $('chips').innerHTML = d.speakers.map(s =>
-      `<div class="chip"><b>${s.name}</b> <span>· ${s.persona}</span></div>`).join('');
+    $('chips').innerHTML = d.speakers.map((s, k) =>
+      `<div class="avatar" data-name="${s.name}" style="--hue:${k * 67}">
+         <div class="face"><span class="eye l"></span><span class="eye r"></span><span class="mouth"></span></div>
+         <div class="aname">${s.name}</div><div class="apersona">${s.persona}</div>
+       </div>`).join('');
   });
 
   es.addEventListener('script', e => {
-    const lines = JSON.parse(e.data).lines; n = lines.length;
+    lines = JSON.parse(e.data).lines; n = lines.length;
     $('transcript').innerHTML = lines.map((l,i) =>
       `<div class="turn" id="t${i}"><span class="who">${l.speaker}</span>${l.line}</div>`).join('');
     $('controls').classList.remove('hidden');
@@ -192,9 +195,9 @@ $('form').addEventListener('submit', e => {
 });
 
 function play(i){
-  if (i >= n){ highlight(-1); setStatus(finished ? 'Done.' : 'Ready.'); return; }
+  if (i >= n){ highlight(-1); faceActive(null); setStatus(finished ? 'Done.' : 'Ready.'); return; }
   if (!ready.has(i)){ cur = i; setStatus('Buffering next line…'); return; } // wait for 'line'
-  cur = i; highlight(i); $('playpause').textContent = 'Pause';
+  cur = i; highlight(i); faceActive(lines[i] && lines[i].speaker); $('playpause').textContent = 'Pause';
   audio.src = `/audio/${sid}/${i}.wav`; audio.play();
 }
 audio.addEventListener('ended', () => { if (cur >= 0) setTimeout(() => play(cur + 1), gapMs); });
@@ -211,12 +214,12 @@ $('playpause').onclick = () => {
   if (audio.paused){ audio.play(); $('playpause').textContent = 'Pause'; }
   else { audio.pause(); $('playpause').textContent = 'Resume'; }
 };
-$('stop').onclick = () => { audio.pause(); audio.currentTime = 0; cur = -1; highlight(-1); $('playpause').textContent = 'Pause'; };
+$('stop').onclick = () => { audio.pause(); audio.currentTime = 0; cur = -1; highlight(-1); faceActive(null); $('playpause').textContent = 'Pause'; };
 $('restart').onclick = () => { play(0); };
 $('export').onclick = () => { if (sid) location.href = `/export/${sid}?gap=${gapMs}`; };
 
 function reset(){
-  sid = null; ready = new Set(); cur = -1; n = 0; finished = false;
+  sid = null; ready = new Set(); cur = -1; n = 0; finished = false; lines = [];
   audio.pause(); audio.removeAttribute('src');
   $('transcript').innerHTML = ''; $('chips').innerHTML = '';
   $('controls').classList.add('hidden'); $('pausebar').classList.add('hidden'); $('export').disabled = true;
