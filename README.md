@@ -55,3 +55,7 @@ Without it, the faces fall back to amplitude-driven jaw movement. Requires `ffmp
 - Want specific voices? Drop your own 5–10s `.wav` into `/tmp/ai-podcast/_refs/<voice>.wav`
   and Chatterbox will clone that instead of the Kokoro-seeded reference.
 - Lighter/faster but less expressive? Switch `MODEL` to `llama3.2:3b` in `app.py`.
+
+## License
+
+[MIT](LICENSE)
