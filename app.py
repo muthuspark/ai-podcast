@@ -252,7 +252,7 @@ MIC_CHAIN = "highpass=f=85,acompressor=ratio=3:attack=5:release=120,aecho=0.8:0.
 
 @app.route("/export/<sid>")
 def export(sid):
-    gap_ms = max(0, min(3000, request.args.get("gap", default=300, type=int)))
+    gap_ms = max(0, min(3000, request.args.get("gap", default=135, type=int)))
     outdir = TMP / sid
     clips = sorted((p for p in outdir.glob("*.wav") if p.stem.isdigit()),
                    key=lambda p: int(p.stem))
