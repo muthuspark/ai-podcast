@@ -96,15 +96,7 @@
 
   <form id="form">
     <input id="topic" placeholder="Discussion topic…" autocomplete="off" required>
-    <div class="row">
-      <select id="speakers">
-        <option value="1">1 speaker</option>
-        <option value="2" selected>2 speakers</option>
-        <option value="3">3 speakers</option>
-        <option value="4">4 speakers</option>
-      </select>
-      <button id="start" type="submit">Start</button>
-    </div>
+    <button id="start" type="submit">Start</button>
   </form>
 
   <div id="stage" class="stage hidden">
@@ -336,7 +328,7 @@ $('form').addEventListener('submit', e => {
   $('convohead').classList.remove('hidden');
   $('start').disabled = true;
   setStatus('Writing the script…');
-  const es = new EventSource(`/generate?topic=${encodeURIComponent(topic)}&speakers=${$('speakers').value}`);
+  const es = new EventSource(`/generate?topic=${encodeURIComponent(topic)}`);
 
   es.addEventListener('speakers', e => {
     const d = JSON.parse(e.data); sid = d.sid;

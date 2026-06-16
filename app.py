@@ -31,10 +31,12 @@ TMP = Path("/tmp/ai-podcast")
 OLLAMA = "http://localhost:11434/api/chat"
 MODEL = "llama3.1:8b"
 
-# Distinct speakers. Chatterbox clones a voice from a short reference clip, so we
-# seed one reference per speaker (once, cached) using Kokoro's named voices.
-VOICES = ["af_heart", "am_michael", "bf_emma", "bm_george"]
-NAMES = ["Ava", "Marcus", "Priya", "Leo"]
+# Always two speakers: a woman on the left, a man on the right (matching the head
+# models in static/heads/0.glb = female, 1.glb = male). Chatterbox clones a voice
+# from a short reference clip, seeded once via Kokoro's named voices.
+FEMALE = {"voices": ["af_heart", "bf_emma"], "names": ["Ava", "Sofia", "Mia", "Elena"]}
+MALE = {"voices": ["am_michael", "bm_george"], "names": ["Marcus", "Leo", "Daniel", "Omar"]}
+VOICES = FEMALE["voices"] + MALE["voices"]   # which refs to pre-seed at warmup
 REF_DIR = TMP / "_refs"
 REF_TEXT = ("Here's a quick thought on that — honestly, it depends, "
             "but I think it works out fine in the end.")
@@ -198,7 +200,6 @@ def index():
 @app.route("/generate")
 def generate():
     topic = (request.args.get("topic") or "").strip()
-    n = max(1, min(4, request.args.get("speakers", type=int) or 2))
     if not topic:
         return "topic required", 400
 
@@ -207,10 +208,12 @@ def generate():
         outdir = TMP / sid
         outdir.mkdir(parents=True, exist_ok=True)
 
-        idx = random.sample(range(len(VOICES)), n)
-        personas = random.sample(PERSONAS, n)
-        speakers = [{"name": NAMES[i], "voice": VOICES[i], "persona": personas[k]}
-                    for k, i in enumerate(idx)]
+        # fixed order: index 0 = woman (left head), index 1 = man (right head)
+        p = random.sample(PERSONAS, 2)
+        speakers = [
+            {"name": random.choice(FEMALE["names"]), "voice": random.choice(FEMALE["voices"]), "persona": p[0]},
+            {"name": random.choice(MALE["names"]), "voice": random.choice(MALE["voices"]), "persona": p[1]},
+        ]
         voice_of = {s["name"]: s["voice"] for s in speakers}
         yield sse("speakers", {"sid": sid, "speakers": speakers})
 
