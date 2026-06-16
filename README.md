@@ -35,6 +35,19 @@ python3 -m venv .venv
 
 First run downloads the Chatterbox + Kokoro models (one-time, needs internet).
 
+### Lip-sync (optional but recommended)
+
+For phoneme-accurate mouth shapes, install [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync)
+into `bin/` (any subfolder; the app finds `bin/*/rhubarb`):
+
+```bash
+mkdir -p bin && cd bin
+curl -L -o r.zip https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.13.0/Rhubarb-Lip-Sync-1.13.0-Linux.zip
+unzip r.zip && rm r.zip && chmod +x Rhubarb-Lip-Sync-*/rhubarb
+```
+
+Without it, the faces fall back to amplitude-driven jaw movement. Requires `ffmpeg` (already a dependency).
+
 ## Notes
 
 - Want specific voices? Drop your own 5–10s `.wav` into `/tmp/ai-podcast/_refs/<voice>.wav`

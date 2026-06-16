@@ -139,7 +139,7 @@ import { clone as skClone } from 'three/addons/utils/SkeletonUtils.js';
 
 const $ = id => document.getElementById(id);
 const audio = $('audio');
-let sid = null, ready = new Set(), cur = -1, n = 0, finished = false, lines = [];
+let sid = null, ready = new Set(), cur = -1, n = 0, finished = false, lines = [], cuesByIndex = {};
 
 // --- inter-speaker pause (ms), live at playback (Stivers et al. 2009 ≈ 135ms) ---
 let gapMs = 135;
@@ -175,19 +175,47 @@ const SPACING = 1.3, TARGET_EYE = 0.28, FACE_AIM = -0.12, HEAD_H = 1.4;
 let renderer, scene, camera, loader, headTemplate = null, headsByName = {}, activeName = null;
 
 const lerp = (a, b, t) => a + (b - a) * t;
-// a morph that opens the mouth, across naming conventions (ARKit / Oculus visemes)
-// mouth-open / blink / smile across ARKit (facecap), Avaturn, and Character-Creator naming
-const JAW_NAMES = ['jawOpen', 'mouthOpen', 'Mouth_Open', 'Jaw_Open', 'jaw_open', 'Lip_Open', 'Open', 'viseme_aa', 'aa'];
+// Morph channels resolved across naming conventions (ARKit / Avaturn-Oculus / Character-Creator).
+// Mouth opens; visemes shape it; brow/smile/frown carry emotion.
+const JAW_NAMES = ['jawOpen', 'mouthOpen', 'Mouth_Open', 'Jaw_Open', 'jaw_open', 'Lip_Open', 'Open', 'viseme_aa'];
 const MORPH_ALIASES = {
   jaw: JAW_NAMES,
   blinkL: ['eyeBlink_L', 'eyeBlinkLeft', 'Eye_Blink_L'], blinkR: ['eyeBlink_R', 'eyeBlinkRight', 'Eye_Blink_R'],
   smileL: ['mouthSmile_L', 'mouthSmileLeft', 'Mouth_Smile_L'], smileR: ['mouthSmile_R', 'mouthSmileRight', 'Mouth_Smile_R'],
+  frownL: ['mouthFrown_L', 'mouthFrownLeft', 'Mouth_Frown_L'], frownR: ['mouthFrown_R', 'mouthFrownRight', 'Mouth_Frown_R'],
+  brow: ['browInnerUp', 'browInnerUp', 'Brow_Raise_Inner'],
+  // Oculus-style visemes (present on Avaturn avatars); ARKit heads fall back to jaw/funnel/pucker
+  aa: ['aa', 'viseme_aa'], E: ['E', 'viseme_E'], oh: ['oh', 'viseme_O'], ou: ['ou', 'viseme_U'],
+  pp: ['PP', 'viseme_PP'], ff: ['FF', 'viseme_FF'], kk: ['kk', 'viseme_kk'], nn: ['nn', 'viseme_nn'],
+  funnel: ['mouthFunnel', 'Mouth_Funnel'], pucker: ['mouthPucker', 'Mouth_Pucker'], close: ['mouthClose', 'Mouth_Close'],
 };
 const resolveMorphs = d => {
   const idx = {};
   for (const [k, names] of Object.entries(MORPH_ALIASES))
     idx[k] = names.reduce((a, nm) => a >= 0 ? a : (d[nm] ?? -1), -1);
   return idx;
+};
+// Rhubarb mouth shapes (A–H, X) → target influence per channel. Only channels the
+// head actually has get applied, so visemes drive Avaturn heads and jaw/funnel/pucker
+// drive ARKit (facecap) heads from the same table.
+const MOUTH_CH = ['jaw', 'aa', 'E', 'oh', 'ou', 'pp', 'ff', 'kk', 'nn', 'funnel', 'pucker', 'close'];
+const SHAPE_TARGETS = {
+  X: {},                                              // idle / silence
+  A: { pp: 1.0, close: 0.9 },                         // M B P — lips together
+  B: { jaw: 0.16, E: 0.25, kk: 0.30 },               // many consonants, slightly open
+  C: { E: 0.70, jaw: 0.42 },                          // EH / AE
+  D: { aa: 1.0, jaw: 0.70 },                          // AA — wide open
+  E: { oh: 0.85, funnel: 0.6, jaw: 0.32 },           // O
+  F: { ou: 0.95, pucker: 0.85, jaw: 0.12 },          // U / W / OW
+  G: { ff: 1.0, jaw: 0.08 },                          // F / V — teeth on lip
+  H: { nn: 0.55, jaw: 0.30 },                         // L
+};
+// per-line delivery → brow/smile/frown targets (applied to the active speaker)
+const EMOTION_FACE = {
+  neutral:    { brow: 0.05, smile: 0.12, frown: 0 },
+  excited:    { brow: 0.45, smile: 0.45, frown: 0 },
+  thoughtful: { brow: 0.22, smile: 0.04, frown: 0 },
+  dismissive: { brow: 0.10, smile: 0,    frown: 0.35 },
 };
 const morphMeshOf = root => {
   let mesh = null;
@@ -286,10 +314,25 @@ function faceActive(name){
   document.querySelectorAll('.lab').forEach(l => l.classList.toggle('active', l.dataset.name === name));
 }
 
+const setIdx = (inf, i, target, rate) => { if (i >= 0) inf[i] = lerp(inf[i] || 0, target, rate); };
+
 function renderStage(t){
   requestAnimationFrame(renderStage);
   if (!scene) return;
   const now = t * 0.001, vol = volume();
+  // current viseme shape of the active clip, by playback time
+  const cues = cuesByIndex[cur];
+  let shape = {};
+  if (activeName && !audio.paused){
+    if (cues && cues.length){
+      const tt = audio.currentTime;
+      shape = SHAPE_TARGETS[(cues.find(c => tt >= c.s && tt < c.e) || cues[cues.length - 1]).v] || {};
+    } else if (vol > 0){
+      shape = { jaw: vol * 0.8 };                       // fallback: amplitude jaw if no cues yet
+    }
+  }
+  const emo = EMOTION_FACE[(lines[cur] && lines[cur].emotion) || 'neutral'] || EMOTION_FACE.neutral;
+
   for (const [name, h] of Object.entries(headsByName)){
     const inf = h.m.morphTargetInfluences, idx = h.idx, active = name === activeName;
     // blink on an independent timer
@@ -297,10 +340,13 @@ function renderStage(t){
     if (h.blink < 0){ bl = 1; if (h.blink < -0.1) h.blink = 2.5 + Math.random() * 3; }
     if (idx.blinkL >= 0) inf[idx.blinkL] = bl;
     if (idx.blinkR >= 0) inf[idx.blinkR] = bl;
-    // mouth: jaw opens with the active speaker's volume, smoothed
-    if (idx.jaw >= 0) inf[idx.jaw] = lerp(inf[idx.jaw] || 0, active ? vol * 0.9 : 0, 0.5);
-    if (idx.smileL >= 0) inf[idx.smileL] = 0.12;
-    if (idx.smileR >= 0) inf[idx.smileR] = 0.12;
+    // viseme mouth: drive each mouth channel toward the active shape (0 when idle)
+    for (const ch of MOUTH_CH) setIdx(inf, idx[ch], active ? (shape[ch] || 0) : 0, 0.4);
+    // emotion on the active speaker's brow/smile/frown; neutral-resting when idle
+    const e = active ? emo : EMOTION_FACE.neutral;
+    setIdx(inf, idx.brow, e.brow, 0.08);
+    setIdx(inf, idx.smileL, e.smile, 0.08); setIdx(inf, idx.smileR, e.smile, 0.08);
+    setIdx(inf, idx.frownL, e.frown, 0.08); setIdx(inf, idx.frownR, e.frown, 0.08);
     // idle heads tilt down a touch as if listening; active faces forward + leans in
     h.group.rotation.y = Math.sin(now * 0.6 + h.group.position.x) * 0.05;
     h.group.rotation.x = lerp(h.group.rotation.x, active ? -0.02 : 0.1, 0.08);
@@ -348,7 +394,9 @@ $('form').addEventListener('submit', e => {
   });
 
   es.addEventListener('line', e => {
-    ready.add(JSON.parse(e.data).index);
+    const d = JSON.parse(e.data);
+    ready.add(d.index);
+    if (d.cues) cuesByIndex[d.index] = d.cues;
     if (cur === -1) play(0);
     else if (audio.paused && cur < n && ready.has(cur)) play(cur);
   });
@@ -385,7 +433,7 @@ $('restart').onclick = () => { play(0); };
 $('export').onclick = () => { if (sid) location.href = `/export/${sid}?gap=${gapMs}`; };
 
 function reset(){
-  sid = null; ready = new Set(); cur = -1; n = 0; finished = false; lines = [];
+  sid = null; ready = new Set(); cur = -1; n = 0; finished = false; lines = []; cuesByIndex = {};
   audio.pause(); audio.removeAttribute('src');
   $('transcript').innerHTML = ''; $('labels').innerHTML = ''; faceActive(null);
   $('convohead').classList.add('hidden'); $('convotopic').textContent = '';

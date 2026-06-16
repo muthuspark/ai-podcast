@@ -96,6 +96,30 @@ def sse(event, data):
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+RHUBARB = next(Path(__file__).resolve().parent.glob("bin/*/rhubarb"), None)
+
+
+def viseme_cues(wav_path):
+    """Rhubarb mouth-shape timeline for a clip → [{s, e, v}] (A–H/X). Empty if the
+    binary is missing or fails, in which case the UI falls back to amplitude jaw."""
+    if not RHUBARB:
+        return []
+    tmp = wav_path.with_suffix(".16k.wav")
+    try:
+        # rhubarb wants 16 kHz mono PCM
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav_path),
+                        "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", str(tmp)],
+                       check=True, capture_output=True)
+        out = subprocess.run([str(RHUBARB), "-r", "phonetic", "-f", "json", "--quiet", str(tmp)],
+                             check=True, capture_output=True, text=True)
+        return [{"s": c["start"], "e": c["end"], "v": c["value"]}
+                for c in json.loads(out.stdout).get("mouthCues", [])]
+    except Exception:
+        return []
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def parse_script(text, names):
     """Pull an ordered [{speaker, line}] list out of the LLM response.
     Handles a clean JSON array, a {"...": [...]} wrapper, or ```json fences."""
@@ -240,8 +264,9 @@ def generate():
                 # tight clip — the gap between turns is applied at playback/export
                 # so it can be tuned live from the UI without re-voicing
                 audio = np.asarray(wav.squeeze(0).cpu(), dtype="float32")
-                sf.write(outdir / f"{i}.wav", audio, sr)
-                yield sse("line", {"index": i})
+                clip = outdir / f"{i}.wav"
+                sf.write(clip, audio, sr)
+                yield sse("line", {"index": i, "cues": viseme_cues(clip)})
             except Exception as e:
                 yield sse("error", {"message": f"TTS failed on line {i}: {e}"})
                 return
