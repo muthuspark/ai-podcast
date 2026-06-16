@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Podcast</title>
+<style>
+  :root { --bg:#0f1014; --fg:#e7e7ea; --dim:#6b6d77; --accent:#7c9cff; --card:#181a20; }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; min-height:100vh; background:var(--bg); color:var(--fg);
+    font:16px/1.6 system-ui,-apple-system,sans-serif;
+    display:flex; justify-content:center; padding:48px 20px;
+  }
+  main { width:100%; max-width:620px; }
+  h1 { font-size:22px; font-weight:600; letter-spacing:-.01em; margin:0 0 28px; }
+  h1 span { color:var(--dim); font-weight:400; }
+  form { display:flex; flex-direction:column; gap:14px; }
+  input, select, button { font:inherit; color:var(--fg); }
+  input, select {
+    background:var(--card); border:1px solid #262932; border-radius:10px;
+    padding:13px 15px; outline:none;
+  }
+  input:focus, select:focus { border-color:var(--accent); }
+  .row { display:flex; gap:10px; }
+  .row select { flex:0 0 130px; }
+  .row input { flex:1; }
+  button {
+    background:var(--accent); color:#0b0d12; border:0; border-radius:10px;
+    padding:13px; font-weight:600; cursor:pointer;
+  }
+  button:disabled { opacity:.4; cursor:default; }
+  .ghost { background:transparent; color:var(--fg); border:1px solid #2b2f3a; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin:26px 0 6px; }
+  .chip {
+    background:var(--card); border:1px solid #262932; border-radius:999px;
+    padding:6px 13px; font-size:13px;
+  }
+  .chip b { color:var(--accent); font-weight:600; }
+  .chip span { color:var(--dim); }
+  .controls { display:flex; gap:8px; margin:22px 0 18px; }
+  .controls button { flex:1; padding:11px; }
+  #transcript { display:flex; flex-direction:column; gap:4px; }
+  .turn { padding:11px 14px; border-radius:10px; opacity:.4; transition:opacity .2s,background .2s; }
+  .turn.spoken { opacity:.7; }
+  .turn.active { opacity:1; background:var(--card); }
+  .turn .who { color:var(--accent); font-weight:600; font-size:13px; display:block; }
+  .status { color:var(--dim); font-size:14px; margin:18px 0; min-height:20px; }
+  .err { color:#ff7b7b; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Podcast <span>· local</span></h1>
+
+  <form id="form">
+    <input id="topic" placeholder="Discussion topic…" autocomplete="off" required>
+    <div class="row">
+      <select id="speakers">
+        <option value="1">1 speaker</option>
+        <option value="2" selected>2 speakers</option>
+        <option value="3">3 speakers</option>
+        <option value="4">4 speakers</option>
+      </select>
+      <button id="start" type="submit">Start</button>
+    </div>
+  </form>
+
+  <div id="chips" class="chips hidden"></div>
+  <div id="status" class="status"></div>
+
+  <div id="controls" class="controls hidden">
+    <button class="ghost" id="playpause">Pause</button>
+    <button class="ghost" id="stop">Stop</button>
+    <button class="ghost" id="restart">Restart</button>
+    <button class="ghost" id="export" disabled>Export</button>
+  </div>
+
+  <div id="transcript"></div>
+  <audio id="audio"></audio>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const audio = $('audio');
+let sid = null, ready = new Set(), cur = -1, n = 0, finished = false;
+
+function setStatus(msg, err=false){ $('status').className = 'status' + (err?' err':''); $('status').textContent = msg; }
+
+$('form').addEventListener('submit', e => {
+  e.preventDefault();
+  const topic = $('topic').value.trim();
+  if (!topic) return;
+  reset();
+  $('start').disabled = true;
+  setStatus('Writing the script…');
+  const es = new EventSource(`/generate?topic=${encodeURIComponent(topic)}&speakers=${$('speakers').value}`);
+
+  es.addEventListener('speakers', e => {
+    const d = JSON.parse(e.data); sid = d.sid;
+    $('chips').classList.remove('hidden');
+    $('chips').innerHTML = d.speakers.map(s =>
+      `<div class="chip"><b>${s.name}</b> <span>· ${s.persona}</span></div>`).join('');
+  });
+
+  es.addEventListener('script', e => {
+    const lines = JSON.parse(e.data).lines; n = lines.length;
+    $('transcript').innerHTML = lines.map((l,i) =>
+      `<div class="turn" id="t${i}"><span class="who">${l.speaker}</span>${l.line}</div>`).join('');
+    $('controls').classList.remove('hidden');
+    setStatus('Voicing the conversation…');
+  });
+
+  es.addEventListener('line', e => {
+    ready.add(JSON.parse(e.data).index);
+    if (cur === -1) play(0);        // start as soon as line 0 lands
+    else if (audio.paused && cur < n && ready.has(cur)) play(cur); // resume a stall
+  });
+
+  es.addEventListener('done', () => { finished = true; $('export').disabled = false; setStatus('Ready.'); es.close(); $('start').disabled = false; });
+  es.addEventListener('error', e => {
+    const msg = e.data ? JSON.parse(e.data).message : 'Connection lost.';
+    setStatus(msg, true); es.close(); $('start').disabled = false;
+  });
+});
+
+function play(i){
+  if (i >= n){ highlight(-1); setStatus(finished ? 'Done.' : 'Ready.'); return; }
+  if (!ready.has(i)){ cur = i; setStatus('Buffering next line…'); return; } // wait for 'line'
+  cur = i; highlight(i); $('playpause').textContent = 'Pause';
+  audio.src = `/audio/${sid}/${i}.wav`; audio.play();
+}
+audio.addEventListener('ended', () => { if (cur >= 0) play(cur + 1); });  // pause is baked into each clip
+
+function highlight(i){
+  document.querySelectorAll('.turn').forEach((t,k) => {
+    t.classList.toggle('active', k === i);
+    t.classList.toggle('spoken', k < i);
+  });
+  if (i >= 0) $('t'+i)?.scrollIntoView({behavior:'smooth', block:'center'});
+}
+
+$('playpause').onclick = () => {
+  if (audio.paused){ audio.play(); $('playpause').textContent = 'Pause'; }
+  else { audio.pause(); $('playpause').textContent = 'Resume'; }
+};
+$('stop').onclick = () => { audio.pause(); audio.currentTime = 0; cur = -1; highlight(-1); $('playpause').textContent = 'Pause'; };
+$('restart').onclick = () => { play(0); };
+$('export').onclick = () => { if (sid) location.href = `/export/${sid}`; };
+
+function reset(){
+  sid = null; ready = new Set(); cur = -1; n = 0; finished = false;
+  audio.pause(); audio.removeAttribute('src');
+  $('transcript').innerHTML = ''; $('chips').innerHTML = '';
+  $('controls').classList.add('hidden'); $('export').disabled = true;
+  $('playpause').textContent = 'Pause';
+}
+</script>
+</body>
+</html>
