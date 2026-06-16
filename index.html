@@ -184,11 +184,12 @@ let renderer, scene, camera, loader, headTemplate = null, headsByName = {}, acti
 
 const lerp = (a, b, t) => a + (b - a) * t;
 // a morph that opens the mouth, across naming conventions (ARKit / Oculus visemes)
-const JAW_NAMES = ['jawOpen', 'mouthOpen', 'viseme_aa', 'aa'];
+// mouth-open / blink / smile across ARKit (facecap), Avaturn, and Character-Creator naming
+const JAW_NAMES = ['jawOpen', 'mouthOpen', 'Mouth_Open', 'Jaw_Open', 'jaw_open', 'Lip_Open', 'Open', 'viseme_aa', 'aa'];
 const MORPH_ALIASES = {
   jaw: JAW_NAMES,
-  blinkL: ['eyeBlink_L', 'eyeBlinkLeft'], blinkR: ['eyeBlink_R', 'eyeBlinkRight'],
-  smileL: ['mouthSmile_L', 'mouthSmileLeft'], smileR: ['mouthSmile_R', 'mouthSmileRight'],
+  blinkL: ['eyeBlink_L', 'eyeBlinkLeft', 'Eye_Blink_L'], blinkR: ['eyeBlink_R', 'eyeBlinkRight', 'Eye_Blink_R'],
+  smileL: ['mouthSmile_L', 'mouthSmileLeft', 'Mouth_Smile_L'], smileR: ['mouthSmile_R', 'mouthSmileRight', 'Mouth_Smile_R'],
 };
 const resolveMorphs = d => {
   const idx = {};
@@ -218,13 +219,21 @@ const templateReady = (async () => {
 })().catch(e => { console.error('3D head failed to load:', e); });
 
 // normalise + center a loaded head: anchor on the eyes so face size is consistent
+// which eye a node is, across naming styles: eyeLeft / CC_Base_L_Eye / lefteye …
+function eyeSide(name){
+  const nm = (name || '').toLowerCase();
+  if (!nm.includes('eye') || nm.includes('lash') || nm.includes('occl') || nm.includes('tear')) return 0;
+  if (/left|_l_|l_eye|eyel\b/.test(nm)) return -1;
+  if (/right|_r_|r_eye|eyer\b/.test(nm)) return 1;
+  return 0;
+}
 function placeHead(root){
   root.updateWorldMatrix(true, true);
   let eL = null, eR = null;
-  root.traverse(o => {
-    const nm = (o.name || '').toLowerCase();
-    if (nm.includes('eye') && nm.includes('left')) eL = o;
-    if (nm.includes('eye') && nm.includes('right')) eR = o;
+  root.traverse(o => {                     // prefer the shortest matching name (the eye bone, not eyelash)
+    const side = eyeSide(o.name);
+    if (side < 0 && (!eL || o.name.length < eL.name.length)) eL = o;
+    if (side > 0 && (!eR || o.name.length < eR.name.length)) eR = o;
   });
   const center = new THREE.Vector3();
   let s;
